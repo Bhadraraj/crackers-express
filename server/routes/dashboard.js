@@ -2,10 +2,10 @@ const express = require('express');
 const Product = require('../models/Product');
 const Category = require('../models/Category');
 const { auth, adminAuth } = require('../middleware/auth');
+const { pool } = require('../config/database');
 
 const router = express.Router();
 
-// Get dashboard statistics
 router.get('/stats', [auth, adminAuth], async (req, res) => {
   try {
     const [
@@ -15,65 +15,59 @@ router.get('/stats', [auth, adminAuth], async (req, res) => {
       inactiveProducts,
       featuredProducts,
       lowStockProducts,
-      totalStock,
-      averagePrice
+      totalStockResult,
+      averagePriceResult
     ] = await Promise.all([
       Product.countDocuments(),
       Category.countDocuments(),
       Product.countDocuments({ isActive: true }),
       Product.countDocuments({ isActive: false }),
       Product.countDocuments({ isFeatured: true }),
-      Product.countDocuments({ $expr: { $lte: ['$stock', '$lowStockThreshold'] } }),
-      Product.aggregate([
-        { $group: { _id: null, total: { $sum: '$stock' } } }
-      ]),
-      Product.aggregate([
-        { $group: { _id: null, average: { $avg: '$price' } } }
-      ])
+      Product.countDocuments({ $expr: true }),
+      Product.aggregate([{ $group: { _id: null, total: { $sum: '$stock' } } }]),
+      Product.aggregate([{ $group: { _id: null, average: { $avg: '$price' } } }])
     ]);
 
-    // Get category-wise product count
-    const categoryStats = await Product.aggregate([
-      {
-        $lookup: {
-          from: 'categories',
-          localField: 'category',
-          foreignField: '_id',
-          as: 'categoryInfo'
-        }
-      },
-      {
-        $unwind: '$categoryInfo'
-      },
-      {
-        $group: {
-          _id: '$category',
-          name: { $first: '$categoryInfo.name' },
-          count: { $sum: 1 },
-          totalStock: { $sum: '$stock' },
-          averagePrice: { $avg: '$price' }
-        }
-      },
-      {
-        $sort: { count: -1 }
-      }
-    ]);
+    const totalStock = totalStockResult[0]?.total || 0;
+    const averagePrice = averagePriceResult[0]?.average || 0;
 
-    // Get low stock products
-    const lowStockProductsList = await Product.find({
-      $expr: { $lte: ['$stock', '$lowStockThreshold'] }
-    })
-    .populate('category', 'name')
-    .select('name stock lowStockThreshold category')
-    .sort({ stock: 1 })
-    .limit(10);
+    const categoryStats = await Product.aggregate([{ $lookup: {} }]);
 
-    // Get recent products
-    const recentProducts = await Product.find()
-      .populate('category', 'name')
-      .select('name price finalPrice category createdAt')
-      .sort({ createdAt: -1 })
-      .limit(5);
+    const [lowStockProductsRows] = await pool.execute(`
+      SELECT p.id, p.name, p.stock, p.low_stock_threshold, c.name as category_name
+      FROM products p
+      LEFT JOIN categories c ON p.category_id = c.id
+      WHERE p.stock <= p.low_stock_threshold
+      ORDER BY p.stock ASC
+      LIMIT 10
+    `);
+
+    const lowStockProductsList = lowStockProductsRows.map(row => ({
+      _id: row.id,
+      id: row.id,
+      name: row.name,
+      stock: row.stock,
+      lowStockThreshold: row.low_stock_threshold,
+      category: { name: row.category_name }
+    }));
+
+    const [recentProductsRows] = await pool.execute(`
+      SELECT p.id, p.name, p.price, p.final_price, p.created_at, c.name as category_name
+      FROM products p
+      LEFT JOIN categories c ON p.category_id = c.id
+      ORDER BY p.created_at DESC
+      LIMIT 5
+    `);
+
+    const recentProducts = recentProductsRows.map(row => ({
+      _id: row.id,
+      id: row.id,
+      name: row.name,
+      price: parseFloat(row.price),
+      finalPrice: parseFloat(row.final_price),
+      createdAt: row.created_at,
+      category: { name: row.category_name }
+    }));
 
     res.json({
       overview: {
@@ -83,8 +77,8 @@ router.get('/stats', [auth, adminAuth], async (req, res) => {
         inactiveProducts,
         featuredProducts,
         lowStockCount: lowStockProducts,
-        totalStock: totalStock[0]?.total || 0,
-        averagePrice: averagePrice[0]?.average || 0
+        totalStock,
+        averagePrice
       },
       categoryStats,
       lowStockProducts: lowStockProductsList,

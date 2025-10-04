@@ -7,15 +7,13 @@ const upload = require('../middleware/upload');
 
 const router = express.Router();
 
-// Get all categories
 router.get('/', async (req, res) => {
   try {
     const { active } = req.query;
     const filter = active === 'true' ? { isActive: true } : {};
-    
-    const categories = await Category.find(filter)
-      .sort({ sortOrder: 1, name: 1 });
-    
+
+    const categories = await Category.find(filter);
+
     res.json(categories);
   } catch (error) {
     console.error('Get categories error:', error);
@@ -23,7 +21,6 @@ router.get('/', async (req, res) => {
   }
 });
 
-// Get category by ID
 router.get('/:id', async (req, res) => {
   try {
     const category = await Category.findById(req.params.id);
@@ -37,7 +34,6 @@ router.get('/:id', async (req, res) => {
   }
 });
 
-// Create category
 router.post('/', [auth, adminAuth], upload.single('image'), [
   body('name').trim().isLength({ min: 1 }).withMessage('Category name is required'),
   body('description').optional().isLength({ max: 500 }).withMessage('Description too long')
@@ -45,15 +41,14 @@ router.post('/', [auth, adminAuth], upload.single('image'), [
   try {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      return res.status(400).json({ 
-        message: 'Validation failed', 
-        errors: errors.array() 
+      return res.status(400).json({
+        message: 'Validation failed',
+        errors: errors.array()
       });
     }
 
     const { name, description, globalDiscount, sortOrder } = req.body;
-    
-    // Check if category already exists
+
     const existingCategory = await Category.findOne({ name: name.trim() });
     if (existingCategory) {
       return res.status(400).json({ message: 'Category already exists' });
@@ -61,6 +56,7 @@ router.post('/', [auth, adminAuth], upload.single('image'), [
 
     const categoryData = {
       name: name.trim(),
+      slug: '',
       description: description?.trim() || '',
       globalDiscount: parseFloat(globalDiscount) || 0,
       sortOrder: parseInt(sortOrder) || 0
@@ -70,8 +66,7 @@ router.post('/', [auth, adminAuth], upload.single('image'), [
       categoryData.image = `/uploads/${req.file.filename}`;
     }
 
-    const category = new Category(categoryData);
-    await category.save();
+    const category = await Category.create(categoryData);
 
     res.status(201).json({
       message: 'Category created successfully',
@@ -83,7 +78,6 @@ router.post('/', [auth, adminAuth], upload.single('image'), [
   }
 });
 
-// Update category
 router.put('/:id', [auth, adminAuth], upload.single('image'), [
   body('name').trim().isLength({ min: 1 }).withMessage('Category name is required'),
   body('description').optional().isLength({ max: 500 }).withMessage('Description too long')
@@ -91,46 +85,44 @@ router.put('/:id', [auth, adminAuth], upload.single('image'), [
   try {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      return res.status(400).json({ 
-        message: 'Validation failed', 
-        errors: errors.array() 
+      return res.status(400).json({
+        message: 'Validation failed',
+        errors: errors.array()
       });
     }
 
     const { name, description, globalDiscount, sortOrder, isActive } = req.body;
-    
+
     const category = await Category.findById(req.params.id);
     if (!category) {
       return res.status(404).json({ message: 'Category not found' });
     }
 
-    // Check if name is being changed and if it conflicts
     if (name.trim() !== category.name) {
-      const existingCategory = await Category.findOne({ 
-        name: name.trim(),
-        _id: { $ne: req.params.id }
-      });
-      if (existingCategory) {
+      const existingCategory = await Category.findOne({ name: name.trim() });
+      if (existingCategory && existingCategory.id !== req.params.id) {
         return res.status(400).json({ message: 'Category name already exists' });
       }
     }
 
-    // Update fields
-    category.name = name.trim();
-    category.description = description?.trim() || '';
-    category.globalDiscount = parseFloat(globalDiscount) || 0;
-    category.sortOrder = parseInt(sortOrder) || 0;
-    category.isActive = isActive !== undefined ? Boolean(isActive) : category.isActive;
+    const updateData = {
+      name: name.trim(),
+      slug: Category.generateSlug(name.trim()),
+      description: description?.trim() || '',
+      globalDiscount: parseFloat(globalDiscount) || 0,
+      sortOrder: parseInt(sortOrder) || 0,
+      isActive: isActive !== undefined ? Boolean(isActive) : category.isActive
+    };
 
     if (req.file) {
-      category.image = `/uploads/${req.file.filename}`;
+      updateData.image = `/uploads/${req.file.filename}`;
     }
 
-    await category.save();
+    const updatedCategory = await Category.updateById(req.params.id, updateData);
 
     res.json({
       message: 'Category updated successfully',
-      category
+      category: updatedCategory
     });
   } catch (error) {
     console.error('Update category error:', error);
@@ -138,7 +130,6 @@ router.put('/:id', [auth, adminAuth], upload.single('image'), [
   }
 });
 
-// Delete category
 router.delete('/:id', [auth, adminAuth], async (req, res) => {
   try {
     const category = await Category.findById(req.params.id);
@@ -146,15 +137,14 @@ router.delete('/:id', [auth, adminAuth], async (req, res) => {
       return res.status(404).json({ message: 'Category not found' });
     }
 
-    // Check if category has products
     const productCount = await Product.countDocuments({ category: req.params.id });
     if (productCount > 0) {
-      return res.status(400).json({ 
-        message: `Cannot delete category. It has ${productCount} products associated with it.` 
+      return res.status(400).json({
+        message: `Cannot delete category. It has ${productCount} products associated with it.`
       });
     }
 
-    await Category.findByIdAndDelete(req.params.id);
+    await Category.deleteById(req.params.id);
 
     res.json({ message: 'Category deleted successfully' });
   } catch (error) {
